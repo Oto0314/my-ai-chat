@@ -5,9 +5,11 @@ import google.generativeai as genai
 
 st.set_page_config(page_title="自分専用・無制限AIチャット", page_icon="💬", layout="wide")
 
-# APIキーを裏側のシークレットから自動読み込み（画面での入力は一切不要）
+# APIキーの安全な読み込み（st.secretsから直接設定）
 if "GEMINI_API_KEY" in st.secrets:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+elif "general" in st.secrets and "GEMINI_API_KEY" in st.secrets["general"]:
+    genai.configure(api_key=st.secrets["general"]["GEMINI_API_KEY"])
 
 HISTORY_FILE = "chat_histories.json"
 MEMORY_FILE = "user_memory_list.json"
@@ -166,21 +168,19 @@ if prompt := st.chat_input("メッセージを入力..."):
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("思考中..."):
             try:
-                # 本物のGemini APIを呼び出す設定
                 system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
                 memories_text = "\n".join(st.session_state.saved_memories)
                 
                 full_system_instruction = f"{system_prompt}\n\n【長期記憶・設定】\n{memories_text}"
                 
-                # Geminiモデルの初期化（Flash等の軽量・高速モデル）
+                # 安定したモデル名に変更
                 model = genai.GenerativeModel(
-                    model_name="gemini-2.5-flash",
+                    model_name="gemini-1.5-flash",
                     system_instruction=full_system_instruction
                 )
                 
-                # 過去の会話履歴をGeminiの形式に変換
                 gemini_history = []
-                for m in current_messages[:-1]: # 直前のユーザー入力を除く
+                for m in current_messages[:-1]:
                     role_map = "user" if m["role"] == "user" else "model"
                     gemini_history.append({"role": role_map, "parts": [m["content"]]})
                 
