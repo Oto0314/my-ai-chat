@@ -1,7 +1,6 @@
 import streamlit as st
 import json
 import os
-import google.generativeai as genai
 
 st.set_page_config(page_title="自分専用・無制限AIチャット", page_icon="💬", layout="wide")
 
@@ -34,11 +33,7 @@ if "saved_memories" not in st.session_state:
 st.title("💬 自分専用・無制限AIチャット")
 
 with st.sidebar:
-    st.header("⚙ 設定・履歴管理")
-    api_key = st.text_input("Google AI Studio API Key", type="password")
-    model_name = st.selectbox("モデル選択", ["gemini-1.5-flash", "gemini-1.5-pro"])
-    
-    st.subheader("📁 チャット履歴の切り替え")
+    st.header("📁 チャット履歴の管理")
     chat_names = list(st.session_state.histories.keys())
     selected_chat = st.selectbox("会話を選ぶ", chat_names, index=chat_names.index(st.session_state.current_chat) if st.session_state.current_chat in chat_names else 0)
     
@@ -63,11 +58,8 @@ with st.sidebar:
         else:
             st.warning("最後のチャットは削除できません。")
 
-    st.subheader("キャラクター設定")
-    system_prompt = st.text_area("キャラ付け・口調など", value="", height=100)
-    
-    st.subheader("🧠 パーソナライズ・長期記憶")
-    new_memory_input = st.text_input("新しい記憶・設定を追加")
+    st.subheader("🧠 長期記憶・パーソナライズ")
+    new_memory_input = st.text_input("新しい記憶を追加")
     if st.button("記憶を追加する"):
         if new_memory_input.strip():
             st.session_state.saved_memories.append(new_memory_input.strip())
@@ -92,20 +84,25 @@ if st.session_state.current_chat not in st.session_state.histories:
 
 current_messages = st.session_state.histories[st.session_state.current_chat]
 
-full_system_instruction = ""
-if system_prompt:
-    full_system_instruction += f"【キャラクター設定】\n{system_prompt}\n\n"
-if st.session_state.saved_memories:
-    full_system_instruction += f"【長期記憶・パーソナライズ】\n" + "\n".join([f"- {m}" for m in st.session_state.saved_memories]) + "\n\n"
-
 for msg in current_messages:
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
 
 if prompt := st.chat_input("メッセージを入力..."):
-    if not api_key:
-        st.error("サイドバーで Google AI Studio API Key を入力してください。")
+    current_messages.append({"role": "user", "content": prompt})
+    save_data(HISTORY_FILE, st.session_state.histories)
+    
+    with st.chat_message("user", avatar="👤"):
+        st.write(prompt)
+        
+    with st.chat_message("assistant", avatar="🤖"):
+        with st.spinner("思考中..."):
+            reply = f"「{prompt}」だな。しっかり受け止めたぞ、詩音。"
+            st.write(reply)
+            current_messages.append({"role": "assistant", "content": reply})
+            save_data(HISTORY_FILE, st.session_state.histories)
+
     else:
         current_messages.append({"role": "user", "content": prompt})
         save_data(HISTORY_FILE, st.session_state.histories)
