@@ -102,35 +102,3 @@ if prompt := st.chat_input("メッセージを入力..."):
             st.write(reply)
             current_messages.append({"role": "assistant", "content": reply})
             save_data(HISTORY_FILE, st.session_state.histories)
-
-    else:
-        current_messages.append({"role": "user", "content": prompt})
-        save_data(HISTORY_FILE, st.session_state.histories)
-        
-        with st.chat_message("user", avatar="👤"):
-            st.write(prompt)
-            
-        with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("思考中..."):
-                try:
-                    genai.configure(api_key=api_key)
-                    
-                    gemini_history = []
-                    for m in current_messages[:-1]:
-                        role = "user" if m["role"] == "user" else "model"
-                        gemini_history.append({"role": role, "parts": [m["content"]]})
-                        
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=full_system_instruction if full_system_instruction else None
-                    )
-                    
-                    chat = model.start_chat(history=gemini_history)
-                    response = chat.send_message(prompt)
-                    reply = response.text
-                except Exception as e:
-                    reply = f"エラーが発生しました: {e}"
-                
-                st.write(reply)
-                current_messages.append({"role": "assistant", "content": reply})
-                save_data(HISTORY_FILE, st.session_state.histories)
