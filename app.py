@@ -1,23 +1,21 @@
 import streamlit as st
 import requests
+import json
 
 st.set_page_config(page_title="自分専用・無制限AIチャット", page_icon="💬", layout="wide")
 
-# カスタムCSS（左右吹き出し・見映えの調整）
+# スタイルの調整（吹き出し風デザイン）
 st.markdown("""
 <style>
-/* チャット領域のスタイル調整 */
 .stChatMessage {
     padding: 0.8rem 1rem;
     border-radius: 12px;
     margin-bottom: 0.8rem;
 }
-/* ユーザー（右寄りの見た目強調） */
 div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from user"]) {
     background-color: #f0f4f9;
     border-left: 4px solid #4a90e2;
 }
-/* AI（左寄りの見た目強調） */
 div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant"]) {
     background-color: #ffffff;
     border-left: 4px solid #2c3e50;
@@ -28,25 +26,47 @@ div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant
 
 st.title("💬 自分専用・無制限AIチャット")
 
+# セッション状態の初期化（チャットルーム管理）
+if "chats" not in st.session_state:
+    st.session_state.chats = {"新しいチャット": []}
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = "新しいチャット"
+
 # サイドバー設定
 with st.sidebar:
-    st.header("⚙️ 設定")
+    st.header("⚙️ 設定 & 履歴")
     api_key = st.text_input("OpenRouter API Key", type="password")
     model_name = st.text_input("モデル名", value="openrouter/free")
     
     st.subheader("キャラクター設定")
-    system_prompt = st.text_area("キャラ付け・口調・行動指定など", value="", height=150)
+    system_prompt = st.text_area("キャラ付け・口調など", value="", height=120)
     
-    st.subheader("パーソナライズ・長期記憶")
-    long_term_memory = st.text_area("ユーザー設定や過去の思い出など", value="", height=150)
+    st.subheader("長期記憶・コンテキスト")
+    long_term_memory = st.text_area("ユーザー設定や思い出など", value="", height=120)
     
-    if st.button("チャット履歴を全消去"):
-        st.session_state.messages = []
+    st.divider()
+    
+    # チャット履歴（ルーム）の管理
+    st.subheader("💬 チャット履歴")
+    chat_titles = list(st.session_state.chats.keys())
+    selected_chat = st.selectbox("会話を選ぶ", chat_titles, index=chat_titles.index(st.session_state.current_chat))
+    if selected_chat != st.session_state.current_chat:
+        st.session_state.current_chat = selected_chat
+        st.rerun()
+        
+    new_chat_title = st.text_input("新しいチャット名", placeholder="例：甘い時間")
+    if st.button("➕ 新規チャット作成"):
+        if new_chat_title and new_chat_title not in st.session_state.chats:
+            st.session_state.chats[new_chat_title] = []
+            st.session_state.current_chat = new_chat_title
+            st.rerun()
+            
+    if st.button("🗑️ 現在の履歴をクリア"):
+        st.session_state.chats[st.session_state.current_chat] = []
         st.rerun()
 
-# セッション状態の初期化
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# 現在のチャットのメッセージ取得
+messages = st.session_state.chats[st.session_state.current_chat]
 
 # システムプロンプトの構築
 full_system_instruction = ""
@@ -60,7 +80,7 @@ def generate_response():
     api_messages = []
     if full_system_instruction:
         api_messages.append({"role": "system", "content": full_system_instruction})
-    for m in st.session_state.messages:
+    for m in messages:
         api_messages.append({"role": m["role"], "content": m["content"]})
     
     headers = {
@@ -85,31 +105,31 @@ def generate_response():
         return f"通信エラーが発生しました: {e}"
 
 # 履歴の表示
-for msg in st.session_state.messages:
+for msg in messages:
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
 
-# 操作ボタン（再試行・1コマ戻す）
-if len(st.session_state.messages) > 0:
+# 操作ボタン（再試行・取消）
+if len(messages) > 0:
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("🔄 最後の返答を再試行"):
-            if st.session_state.messages[-1]["role"] == "assistant":
-                st.session_state.messages.pop()
-            if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
+            if messages[-1]["role"] == "assistant":
+                messages.pop()
+            if len(messages) > 0 and messages[-1]["role"] == "user":
                 with st.spinner("再度思考中..."):
                     new_reply = generate_response()
-                    st.session_state.messages.append({"role": "assistant", "content": new_reply})
+                    messages.append({"role": "assistant", "content": new_reply})
                 st.rerun()
     with col2:
         if st.button("↩️ 1つのやり取りを取消"):
-            if len(st.session_state.messages) >= 2:
-                st.session_state.messages.pop()
-                st.session_state.messages.pop()
+            if len(messages) >= 2:
+                messages.pop()
+                messages.pop()
                 st.rerun()
-            elif len(st.session_state.messages) == 1:
-                st.session_state.messages.pop()
+            elif len(messages) == 1:
+                messages.pop()
                 st.rerun()
 
 # ユーザー入力
@@ -117,12 +137,12 @@ if prompt := st.chat_input("メッセージを入力..."):
     if not api_key:
         st.error("サイドバーで OpenRouter API Key を入力してください。")
     else:
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        messages.append({"role": "user", "content": prompt})
         st.rerun()
 
-# 直前メッセージがユーザーなら応答生成
-if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
+# 応答生成
+if len(messages) > 0 and messages[-1]["role"] == "user":
     with st.spinner("思考中..."):
         reply = generate_response()
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+        messages.append({"role": "assistant", "content": reply})
     st.rerun()
