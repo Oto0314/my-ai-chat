@@ -14,7 +14,7 @@ div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant
 """, unsafe_allow_html=True)
 
 HISTORY_FILE = "chat_histories.json"
-MEMORY_FILE = "user_memory.json"
+MEMORY_FILE = "user_memory_list.json"
 
 def load_data(filename, default_value):
     if os.path.exists(filename):
@@ -36,13 +36,13 @@ if "current_chat" not in st.session_state:
     chat_keys = list(st.session_state.histories.keys())
     st.session_state.current_chat = chat_keys[0] if chat_keys else "デフォルト"
 
-if "saved_memory" not in st.session_state:
-    st.session_state.saved_memory = load_data(MEMORY_FILE, {"memory": ""})
+if "saved_memories" not in st.session_state:
+    st.session_state.saved_memories = load_data(MEMORY_FILE, [])
 
 st.title("💬 自分専用・無制限AIチャット")
 
 with st.sidebar:
-    st.header("⚙️ 設定・履歴管理")
+    st.header("⚙️️ 設定・履歴管理")
     api_key = st.text_input("OpenRouter API Key", type="password")
     model_name = st.text_input("モデル名", value="openrouter/free")
     
@@ -74,13 +74,26 @@ with st.sidebar:
     st.subheader("キャラクター設定")
     system_prompt = st.text_area("キャラ付け・口調など", value="", height=100)
     
-    st.subheader("長期記憶・パーソナライズ保存")
-    current_memory_text = st.session_state.saved_memory.get("memory", "")
-    updated_memory = st.text_area("随時追加できる思い出・設定", value=current_memory_text, height=120)
-    if st.button("記憶を保存する"):
-        st.session_state.saved_memory["memory"] = updated_memory
-        save_data(MEMORY_FILE, st.session_state.saved_memory)
-        st.success("記憶を保存しました！")
+    st.subheader("🧠 パーソナライズ・長期記憶")
+    new_memory_input = st.text_input("新しい記憶・設定を追加")
+    if st.button("記憶を追加する"):
+        if new_memory_input.strip():
+            st.session_state.saved_memories.append(new_memory_input.strip())
+            save_data(MEMORY_FILE, st.session_state.saved_memories)
+            st.success("記憶を追加しました！")
+            st.rerun()
+            
+    if st.session_state.saved_memories:
+        st.write("【保存されている記憶一覧】")
+        for i, mem in enumerate(st.session_state.saved_memories):
+            cols = st.columns([4, 1])
+            with cols[0]:
+                st.markdown(f"- {mem}")
+            with cols[1]:
+                if st.button("削除", key=f"del_mem_{i}"):
+                    st.session_state.saved_memories.pop(i)
+                    save_data(MEMORY_FILE, st.session_state.saved_memories)
+                    st.rerun()
 
 if st.session_state.current_chat not in st.session_state.histories:
     st.session_state.histories[st.session_state.current_chat] = []
@@ -90,8 +103,8 @@ current_messages = st.session_state.histories[st.session_state.current_chat]
 full_system_instruction = ""
 if system_prompt:
     full_system_instruction += f"【キャラクター設定】\n{system_prompt}\n\n"
-if st.session_state.saved_memory.get("memory"):
-    full_system_instruction += f"【長期記憶・パーソナライズ】\n{st.session_state.saved_memory['memory']}\n\n"
+if st.session_state.saved_memories:
+    full_system_instruction += f"【長期記憶・パーソナライズ】\n" + "\n".join([f"- {m}" for m in st.session_state.saved_memories]) + "\n\n"
 
 def generate_response():
     api_messages = []
@@ -150,7 +163,12 @@ if len(current_messages) > 0:
                 save_data(HISTORY_FILE, st.session_state.histories)
                 st.rerun()
 
-if prompt := st.chat_input("メッセージを入力..."):
+# 改行しても勝手に送信されないように text_area を使用
+with st.form(key="chat_form", clear_on_submit=True):
+    prompt = st.text_area("メッセージを入力...", placeholder="Shift+Enter等で改行できます", height=80)
+    submit_button = st.form_submit_button("送信")
+
+if submit_button and prompt:
     if not api_key:
         st.error("サイドバーで OpenRouter API Key を入力してください。")
     else:
