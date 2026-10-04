@@ -13,13 +13,8 @@ div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant
 
 st.title("💬 自分専用・無制限AIチャット")
 
-if "chats" not in st.session_state:
-    st.session_state.chats = {"新しいチャット": []}
-if "current_chat" not in st.session_state:
-    st.session_state.current_chat = "新しいチャット"
-
 with st.sidebar:
-    st.header("⚙️ 設定 & 履歴")
+    st.header("⚙️ 設定")
     api_key = st.text_input("OpenRouter API Key", type="password")
     model_name = st.text_input("モデル名", value="nousresearch/hermes-3-llama-3.1-70b:free")
     
@@ -29,25 +24,12 @@ with st.sidebar:
     st.subheader("長期記憶・コンテキスト")
     long_term_memory = st.text_area("ユーザー設定や思い出など", value="", height=120)
     
-    st.divider()
-    chat_titles = list(st.session_state.chats.keys())
-    selected_chat = st.selectbox("会話を選ぶ", chat_titles, index=chat_titles.index(st.session_state.current_chat))
-    if selected_chat != st.session_state.current_chat:
-        st.session_state.current_chat = selected_chat
-        st.rerun()
-        
-    new_chat_title = st.text_input("新しいチャット名", placeholder="例：甘い時間")
-    if st.button("➕ 新規チャット作成"):
-        if new_chat_title and new_chat_title not in st.session_state.chats:
-            st.session_state.chats[new_chat_title] = []
-            st.session_state.current_chat = new_chat_title
-            st.rerun()
-            
-    if st.button("🗑️ 現在の履歴をクリア"):
-        st.session_state.chats[st.session_state.current_chat] = []
+    if st.button("チャット履歴を全消去"):
+        st.session_state.messages = []
         st.rerun()
 
-messages = st.session_state.chats[st.session_state.current_chat]
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 full_system_instruction = ""
 if system_prompt:
@@ -59,7 +41,7 @@ def generate_response():
     api_messages = []
     if full_system_instruction:
         api_messages.append({"role": "system", "content": full_system_instruction})
-    for m in messages:
+    for m in st.session_state.messages:
         api_messages.append({"role": m["role"], "content": m["content"]})
     
     headers = {
@@ -83,79 +65,49 @@ def generate_response():
     except Exception as e:
         return f"通信エラーが発生しました: {e}"
 
-for msg in messages:
+for msg in st.session_state.messages:
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
 
-if "editing" not in st.session_state:
-    st.session_state.editing = False
-
-if len(messages) > 0:
-    col1, col2, col3 = st.columns([1, 1, 1])
+if len(st.session_state.messages) > 0:
+    col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("🔄 再試行"):
-            if messages[-1]["role"] == "assistant":
-                messages.pop()
-            if len(messages) > 0 and messages[-1]["role"] == "user":
+        if st.button("🔄 最後の返答を再試行"):
+            if st.session_state.messages[-1]["role"] == "assistant":
+                st.session_state.messages.pop()
+            if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
                 with st.spinner("思考中..."):
                     new_reply = generate_response()
-                    messages.append({"role": "assistant", "content": new_reply})
+                    st.session_state.messages.append({"role": "assistant", "content": new_reply})
                 st.rerun()
     with col2:
-        if st.button("↩️ 取消"):
-            if len(messages) >= 2:
-                messages.pop()
-                messages.pop()
+        if st.button("↩️ 1つのやり取りを取消"):
+            if len(st.session_state.messages) >= 2:
+                st.session_state.messages.pop()
+                st.session_state.messages.pop()
                 st.rerun()
-            elif len(messages) == 1:
-                messages.pop()
-                st.rerun()
-    with col3:
-        if st.button("✏️ 直前を編集"):
-            if len(messages) > 0:
-                st.session_state.editing = True
+            elif len(st.session_state.messages) == 1:
+                st.session_state.messages.pop()
                 st.rerun()
 
-if st.session_state.editing and len(messages) > 0:
-    st.markdown("---")
-    st.write("**直前のメッセージを編集する**")
-    last_user_idx = -1
-    for i in range(len(messages)-1, -1, -1):
-        if messages[i]["role"] == "user":
-            last_user_idx = i
-            break
-    
-    if last_user_idx != -1:
-        edit_text = st.text_area("修正内容", value=messages[last_user_idx]["content"])
-        col_e1, col_e2 = st.columns(2)
-        with col_e1:
-            if st.button("更新して送信"):
-                while len(messages) > last_user_idx:
-                    messages.pop()
-                messages.append({"role": "user", "content": edit_text})
-                st.session_state.editing = False
-                with st.spinner("思考中..."):
-                    reply = generate_response()
-                    messages.append({"role": "assistant", "content": reply})
-                st.rerun()
-        with col_e2:
-            if st.button("キャンセル"):
-                st.session_state.editing = False
-                st.rerun()
-
-if not st.session_state.editing:
-    if prompt := st.chat_input("メッセージを入力..."):
-        if not api_key:
-            st.error("サイドバーで OpenRouter API Key を入力してください。")
-        else:
-            messages.append({"role": "user", "content": prompt})
-            st.rerun()
-
-    if len(messages) > 0 and messages[-1]["role"] == "user":
-        with st.spinner("思考中..."):
-            reply = generate_response()
-            messages.append({"role": "assistant", "content": reply})
+if prompt := st.chat_input("メッセージを入力..."):
+    if not api_key:
+        st.error("サイドバーで OpenRouter API Key を入力してください。")
+    else:
+        st.session_state.messages.append({"role": "user", "content": prompt})
         st.rerun()
 
+if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
+    with st.spinner("思考中..."):
+        reply = generate_response()
+        st.session_state.messages.append({"role": "assistant", "content": reply})
     st.rerun()
+
+
+if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
+    with st.spinner("思考中..."):
+        reply = generate_response()
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.rerun()
+
