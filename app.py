@@ -1,25 +1,22 @@
-import os
 import streamlit as st
+from google import genai
 
-st.title("環境チェック")
+st.title("Gemini接続テスト")
 
-names = [
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "all_proxy",
-]
+api_key = st.secrets["GEMINI_API_KEY"]
 
-for name in names:
-    value = os.environ.get(name)
+client = genai.Client(api_key=api_key)
 
-    if value is None:
-        st.write(f"{name}: 設定なし")
-    else:
-        try:
-            value.encode("ascii")
-            st.write(f"{name}: 設定あり・ASCIIのみ")
-        except UnicodeEncodeError:
-            st.error(f"{name}: ASCII以外の文字が含まれています")
+if st.button("テスト送信"):
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents="Hello. Reply with OK."
+        )
+
+        st.success("Gemini APIから返答がありました")
+        st.write(response.text)
+
+    except Exception as e:
+        st.error("Gemini APIでエラーが発生しました")
+        st.exception(e)
