@@ -1,8 +1,13 @@
 import streamlit as st
 import json
 import os
+import google.generativeai as genai
 
 st.set_page_config(page_title="自分専用・無制限AIチャット", page_icon="💬", layout="wide")
+
+# APIキーを裏側のシークレットから自動読み込み（画面での入力は一切不要）
+if "GEMINI_API_KEY" in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 HISTORY_FILE = "chat_histories.json"
 MEMORY_FILE = "user_memory_list.json"
@@ -39,7 +44,7 @@ st.title("💬 自分専用・無制限AIチャット")
 current_chat_name = st.session_state.current_chat
 if current_chat_name not in st.session_state.chat_settings:
     st.session_state.chat_settings[current_chat_name] = {
-        "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。"
+        "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。( )は心の中、《 》は行動や光景、〈 〉は効果音。語尾に「よ」は使わない。「そっか」ではなく「そうか」を使う。"
     }
 
 with st.sidebar:
@@ -58,7 +63,7 @@ with st.sidebar:
         if new_chat_name and new_chat_name not in st.session_state.histories:
             st.session_state.histories[new_chat_name] = []
             st.session_state.chat_settings[new_chat_name] = {
-                "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。"
+                "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。( )は心の中、《 》は行動や光景、〈 〉は効果音。語尾に「よ」は使わない。「そっか」ではなく「そうか」を使う。"
             }
             save_data(HISTORY_FILE, st.session_state.histories)
             save_data(SETTINGS_FILE, st.session_state.chat_settings)
@@ -130,7 +135,7 @@ for i, msg in enumerate(current_messages):
                 st.session_state[f"is_editing_{i}"] = False
                 st.rerun()
 
-# メッセージ入力欄のすぐ上に操作ボタンを配置（2枚目の位置を再現）
+# 操作ボタンを入力欄のすぐ上に配置
 st.divider()
 col_b1, col_b2, col_b3 = st.columns(3)
 with col_b1:
@@ -160,7 +165,32 @@ if prompt := st.chat_input("メッセージを入力..."):
         
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("思考中..."):
-            reply = f"「{prompt}」だな。しっかり受け止めたぞ、詩音。"
+            try:
+                # 本物のGemini APIを呼び出す設定
+                system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+                memories_text = "\n".join(st.session_state.saved_memories)
+                
+                full_system_instruction = f"{system_prompt}\n\n【長期記憶・設定】\n{memories_text}"
+                
+                # Geminiモデルの初期化（Flash等の軽量・高速モデル）
+                model = genai.GenerativeModel(
+                    model_name="gemini-2.5-flash",
+                    system_instruction=full_system_instruction
+                )
+                
+                # 過去の会話履歴をGeminiの形式に変換
+                gemini_history = []
+                for m in current_messages[:-1]: # 直前のユーザー入力を除く
+                    role_map = "user" if m["role"] == "user" else "model"
+                    gemini_history.append({"role": role_map, "parts": [m["content"]]})
+                
+                chat_session = model.start_chat(history=gemini_history)
+                response = chat_session.send_message(prompt)
+                reply = response.text
+                
+            except Exception as e:
+                reply = f"エラーが発生しました: {e}"
+                
             st.write(reply)
             current_messages.append({"role": "assistant", "content": reply})
             save_data(HISTORY_FILE, st.session_state.histories)
