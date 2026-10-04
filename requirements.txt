@@ -1,5 +1,2 @@
 streamlit
-requests
-duckduckgo_search
-streamlit
-
+google-genai
