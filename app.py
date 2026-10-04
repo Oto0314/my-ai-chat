@@ -1,7 +1,7 @@
 import streamlit as st
-import requests
 import json
 import os
+from google import genai
 
 st.set_page_config(page_title="自分専用・無制限AIチャット", page_icon="💬", layout="wide")
 
@@ -42,9 +42,9 @@ if "saved_memories" not in st.session_state:
 st.title("💬 自分専用・無制限AIチャット")
 
 with st.sidebar:
-    st.header("⚙️️ 設定・履歴管理")
-    api_key = st.text_input("OpenRouter API Key", type="password")
-    model_name = st.text_input("モデル名", value="openrouter/free")
+    st.header("⚙ 設定・履歴管理")
+    api_key = st.text_input("Google AI Studio API Key", type="password")
+    model_name = st.selectbox("モデル選択", ["gemini-2.5-flash", "gemini-2.5-pro"])
     
     st.subheader("📁 チャット履歴の切り替え")
     chat_names = list(st.session_state.histories.keys())
@@ -107,32 +107,30 @@ if st.session_state.saved_memories:
     full_system_instruction += f"【長期記憶・パーソナライズ】\n" + "\n".join([f"- {m}" for m in st.session_state.saved_memories]) + "\n\n"
 
 def generate_response():
-    api_messages = []
-    if full_system_instruction:
-        api_messages.append({"role": "system", "content": full_system_instruction})
-    for m in current_messages:
-        api_messages.append({"role": m["role"], "content": m["content"]})
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": model_name,
-        "messages": api_messages
-    }
-    
     try:
-        response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
-        res_json = response.json()
-        if "choices" in res_json and len(res_json["choices"]) > 0:
-            return res_json["choices"][0]["message"]["content"]
-        elif "error" in res_json:
-            return f"エラーが発生しました: {res_json['error'].get('message', '不明なエラー')}"
-        else:
-            return "応答を取得できませんでした。"
+        client = genai.Client(api_key=api_key)
+        
+        # 履歴をGeminiの形式に変換
+        contents = []
+        for m in current_messages:
+            role = "user" if m["role"] == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": m["content"]}]
+            })
+            
+        config = {}
+        if full_system_instruction:
+            config["system_instruction"] = full_system_instruction
+            
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config if config else None
+        )
+        return response.text
     except Exception as e:
-        return f"通信エラーが発生しました: {e}"
+        return f"エラーが発生しました: {e}"
 
 for msg in current_messages:
     avatar = "👤" if msg["role"] == "user" else "🤖"
@@ -163,14 +161,13 @@ if len(current_messages) > 0:
                 save_data(HISTORY_FILE, st.session_state.histories)
                 st.rerun()
 
-# 改行しても勝手に送信されないように text_area を使用
 with st.form(key="chat_form", clear_on_submit=True):
     prompt = st.text_area("メッセージを入力...", placeholder="Shift+Enter等で改行できます", height=80)
     submit_button = st.form_submit_button("送信")
 
 if submit_button and prompt:
     if not api_key:
-        st.error("サイドバーで OpenRouter API Key を入力してください。")
+        st.error("サイドバーで Google AI Studio API Key を入力してください。")
     else:
         current_messages.append({"role": "user", "content": prompt})
         save_data(HISTORY_FILE, st.session_state.histories)
@@ -182,5 +179,6 @@ if len(current_messages) > 0 and current_messages[-1]["role"] == "user":
         current_messages.append({"role": "assistant", "content": reply})
         save_data(HISTORY_FILE, st.session_state.histories)
     st.rerun()
+
 
 
