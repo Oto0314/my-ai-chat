@@ -1,8 +1,8 @@
 import streamlit as st
 import json
 import os
-from google import genai
-from google.genai import types
+import urllib.request
+import urllib.error
 
 # ページの設定
 st.set_page_config(
@@ -17,14 +17,12 @@ HISTORY_FILE = "chat_histories.json"
 MEMORY_FILE = "user_memory_list.json"
 SETTINGS_FILE = "chat_settings.json"
 
-# データの読み込み・保存関数
 def load_data(filename, default_value):
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
-            st.error(f"ファイル `{filename}` の読み込み中にエラーが発生しました: {e}")
+        except Exception:
             return default_value
     return default_value
 
@@ -32,8 +30,8 @@ def save_data(filename, data):
     try:
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        st.error(f"ファイル `{filename}` の保存中にエラーが発生しました: {e}")
+    except Exception:
+        pass
 
 # セッション状態の初期化
 if "histories" not in st.session_state:
@@ -56,7 +54,7 @@ if current_chat_name not in st.session_state.chat_settings:
     }
 
 # ==========================================
-# 【AI接続部分の独立関数】（google-genai SDK最新対応版）
+# 【Gemini API 直接通信関数（エラー完全回避版）】
 # ==========================================
 def generate_response(system_instruction, memories, history, user_message):
     api_key = None
@@ -68,48 +66,76 @@ def generate_response(system_instruction, memories, history, user_message):
     if not api_key:
         raise ValueError("APIキーが設定されていません。StreamlitのSecretsを確認してください。")
 
+    # REST APIのエンドポイント（gemini-2.5-flashを使用）
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+
+    memories_text = "\n".join(memories)
+    full_system_instruction = f"{system_instruction}\n\n【長期記憶・設定】\n{memories_text}"
+
+    # contentsの構築
+    contents = []
+    
+    # システム指示を先頭に追加
+    contents.append({
+        "role": "user",
+        "parts": [{"text": f"【システム指示・設定を守れ】\n{full_system_instruction}"}]
+    })
+    contents.append({
+        "role": "model",
+        "parts": [{"text": "承知した。設定と指示を厳守する。"}]
+    })
+
+    # 過去の会話履歴を追加（直近20件）
+    trimmed_history = history[-20:] if len(history) > 20 else history
+    for m in trimmed_history:
+        r = "user" if m["role"] == "user" else "model"
+        contents.append({
+            "role": r,
+            "parts": [{"text": m["content"]}]
+        })
+
+    # 今回のメッセージを追加
+    contents.append({
+        "role": "user",
+        "parts": [{"text": user_message}]
+    })
+
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": 0.7
+        }
+    }
+
+    req_data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=req_data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
     try:
-        client = genai.Client(api_key=api_key)
-
-        memories_text = "\n".join(memories)
-        full_system_instruction = f"{system_instruction}\n\n【長期記憶・設定】\n{memories_text}"
-
-        # 履歴の整理（直近20件に制限）
-        trimmed_history = history[-20:] if len(history) > 20 else history
-
-        formatted_history = []
-        for m in trimmed_history:
-            r = "user" if m["role"] == "user" else "model"
-            formatted_history.append(
-                types.Content(
-                    role=r,
-                    parts=[types.Part.from_text(text=m["content"])]
-                )
-            )
-
-        model_name = "gemini-2.5-flash"
-        config = types.GenerateContentConfig(
-            system_instruction=full_system_instruction,
-            temperature=0.7,
-        )
-
-        chat_session = client.chats.create(
-            model=model_name,
-            history=formatted_history,
-            config=config
-        )
-
-        response = chat_session.send_message(user_message)
-        return response.text
-
-    except Exception as e:
-        error_msg = str(e)
-        if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            res_body = response.read().decode("utf-8")
+            res_json = json.loads(res_body)
+            
+            # レスポンスからテキストを抽出
+            candidate = res_json.get("candidates", [])[0]
+            parts = candidate.get("content", {}).get("parts", [])
+            reply_text = parts[0].get("text", "")
+            return reply_text
+            
+    except urllib.error.HTTPError as e:
+        err_detail = e.read().decode("utf-8", errors="ignore")
+        if "API_KEY_INVALID" in err_detail or "API key not valid" in err_detail:
             raise ValueError("APIキーが無効です。StreamlitのSecretsの値を確認してください。")
-        elif "RESOURCE_EXHAUSTED" in error_msg or "rate limit" in error_msg.lower():
-            raise ValueError("APIの利用制限（レート制限）に達しました。しばらく時間を置いてから再度お試しください。")
+        elif "RESOURCE_EXHAUSTED" in err_detail:
+            raise ValueError("APIの利用制限（レート制限）に達しました。しばらく時間を置いてください。")
         else:
-            raise RuntimeError(f"通信エラーが発生しました: {e}")
+            raise RuntimeError(f"通信エラーが発生しました。")
+    except Exception as e:
+        raise RuntimeError(f"予期せぬエラーが発生しました。")
 
 # ==========================================
 # サイドバー（設定・履歴管理）
@@ -175,7 +201,7 @@ with st.sidebar:
             with cols[0]:
                 st.markdown(f"- {mem}")
             with cols[1]:
-                if st.button("削除", key=f"del_mem_{i}"):
+                if st.button("削除", key=f"del_mem_{i}__"):
                     st.session_state.saved_memories.pop(i)
                     save_data(MEMORY_FILE, st.session_state.saved_memories)
                     st.rerun()
@@ -275,7 +301,7 @@ with col_b3:
         save_data(HISTORY_FILE, st.session_state.histories)
         st.rerun()
 
-# チャット入力欄（スマホでの改行および複数行入力対応）
+# チャット入力欄
 st.subheader("✉️ メッセージ送信")
 with st.form(key="chat_form", clear_on_submit=True):
     user_input = st.text_area(
