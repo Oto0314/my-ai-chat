@@ -33,7 +33,9 @@ if "saved_memories" not in st.session_state:
 st.title("💬 自分専用・無制限AIチャット")
 
 with st.sidebar:
-    st.header("📁 チャット履歴の管理")
+    st.header("⚙ 設定・履歴管理")
+    
+    st.subheader("📁 チャット履歴の切り替え")
     chat_names = list(st.session_state.histories.keys())
     selected_chat = st.selectbox("会話を選ぶ", chat_names, index=chat_names.index(st.session_state.current_chat) if st.session_state.current_chat in chat_names else 0)
     
@@ -84,10 +86,45 @@ if st.session_state.current_chat not in st.session_state.histories:
 
 current_messages = st.session_state.histories[st.session_state.current_chat]
 
-for msg in current_messages:
+# 操作ボタンエリア（1個戻る・再思考・全削除など）
+col_b1, col_b2, col_b3 = st.columns(3)
+with col_b1:
+    if st.button("↩ 1個戻る") and current_messages:
+        current_messages.pop()
+        if current_messages and current_messages[-1]["role"] == "assistant":
+            current_messages.pop()
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+with col_b2:
+    if st.button("🔄 再思考（直前やり直し）") and len(current_messages) >= 2:
+        current_messages.pop() # アシスタントの返答を削除
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+with col_b3:
+    if st.button("🗑️ 履歴を全クリア"):
+        current_messages.clear()
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+
+st.divider()
+
+for i, msg in enumerate(current_messages):
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
+        
+        # 編集機能
+        if st.button("✏️ 編集", key=f"edit_btn_{i}"):
+            st.session_state[f"is_editing_{i}"] = True
+            
+        if st.session_state.get(f"is_editing_{i}", False):
+            new_text = st.text_area("内容を修正", value=msg["content"], key=f"edit_text_{i}")
+            if st.button("保存して更新", key=f"save_edit_{i}"):
+                current_messages[i]["content"] = new_text
+                # 以降の履歴を切り詰める場合などの処理
+                save_data(HISTORY_FILE, st.session_state.histories)
+                st.session_state[f"is_editing_{i}"] = False
+                st.rerun()
 
 if prompt := st.chat_input("メッセージを入力..."):
     current_messages.append({"role": "user", "content": prompt})
