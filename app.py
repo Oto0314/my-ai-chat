@@ -17,7 +17,7 @@ HISTORY_FILE = "chat_histories.json"
 MEMORY_FILE = "user_memory_list.json"
 SETTINGS_FILE = "chat_settings.json"
 
-# データの読み込み・保存関数（将来的にデータベース等への拡張もしやすい構造）
+# データの読み込み・保存関数
 def load_data(filename, default_value):
     if os.path.exists(filename):
         try:
@@ -56,7 +56,7 @@ if current_chat_name not in st.session_state.chat_settings:
     }
 
 # ==========================================
-# 【AI接続部分の独立関数】（google-genai SDK使用）
+# 【AI接続部分の独立関数】（google-genai SDK最新対応版）
 # ==========================================
 def generate_response(system_instruction, memories, history, user_message):
     api_key = None
@@ -69,19 +69,16 @@ def generate_response(system_instruction, memories, history, user_message):
         raise ValueError("APIキーが設定されていません。StreamlitのSecretsを確認してください。")
 
     try:
-        # 公式推奨の新しい client 初期化
         client = genai.Client(api_key=api_key)
 
-        # 長期記憶をシステム指示に統合
         memories_text = "\n".join(memories)
         full_system_instruction = f"{system_instruction}\n\n【長期記憶・設定】\n{memories_text}"
 
-        # 履歴の整理（長すぎる場合は直近の直近20件に絞ってAPI負荷とトークン消費を抑制）
+        # 履歴の整理（直近20件に制限）
         trimmed_history = history[-20:] if len(history) > 20 else history
 
         formatted_history = []
         for m in trimmed_history:
-            # 役割の適切なマッピング (user / model)
             r = "user" if m["role"] == "user" else "model"
             formatted_history.append(
                 types.Content(
@@ -90,7 +87,6 @@ def generate_response(system_instruction, memories, history, user_message):
                 )
             )
 
-        # チャットセッションの作成
         model_name = "gemini-2.5-flash"
         config = types.GenerateContentConfig(
             system_instruction=full_system_instruction,
@@ -103,19 +99,17 @@ def generate_response(system_instruction, memories, history, user_message):
             config=config
         )
 
-        # メッセージの送信
         response = chat_session.send_message(user_message)
         return response.text
 
     except Exception as e:
         error_msg = str(e)
-        # キーや詳細な内部情報を保護しつつ分かりやすく表示
         if "API_KEY_INVALID" in error_msg or "API key not valid" in error_msg:
             raise ValueError("APIキーが無効です。StreamlitのSecretsの値を確認してください。")
         elif "RESOURCE_EXHAUSTED" in error_msg or "rate limit" in error_msg.lower():
             raise ValueError("APIの利用制限（レート制限）に達しました。しばらく時間を置いてから再度お試しください。")
         else:
-            raise RuntimeError(f"通信エラーが発生しました。時間を置いて再度お試しください。")
+            raise RuntimeError(f"通信エラーが発生しました: {e}")
 
 # ==========================================
 # サイドバー（設定・履歴管理）
@@ -216,7 +210,6 @@ for i, msg in enumerate(current_messages):
             with col_save:
                 if st.button("💾 更新を保存", key=f"save_btn_{current_chat_name}_{i}"):
                     if msg["role"] == "user":
-                        # ユーザー発言を編集した場合は、それ以降の会話を切り詰めてAI返答を再生成
                         current_messages = current_messages[:i]
                         current_messages.append({"role": "user", "content": edited_content})
                         
@@ -233,7 +226,6 @@ for i, msg in enumerate(current_messages):
                             except Exception as e:
                                 st.error(str(e))
                     else:
-                        # AI側の返答を編集した場合はそのメッセージだけ更新し、後続の会話は消さない
                         current_messages[i]["content"] = edited_content
                         
                     st.session_state.histories[current_chat_name] = current_messages
@@ -283,7 +275,7 @@ with col_b3:
         save_data(HISTORY_FILE, st.session_state.histories)
         st.rerun()
 
-# チャット入力欄（スマホでの改行および複数行入力を確実にするためのフォーム＋text_area構成）
+# チャット入力欄（スマホでの改行および複数行入力対応）
 st.subheader("✉️ メッセージ送信")
 with st.form(key="chat_form", clear_on_submit=True):
     user_input = st.text_area(
