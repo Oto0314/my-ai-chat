@@ -55,14 +55,9 @@ if current_chat_name not in st.session_state.chat_settings:
     }
 
 # ==========================================
-# AI応答生成関数（将来のAI変更に備えて分離）
+# AI応答生成関数
 # ==========================================
 def generate_response(system_instruction, memories, history, user_message):
-    """
-    AIモデルとの接続部分。
-    将来別のAIサービスに切り替える場合は、この関数の中身だけを書き換えればOKです。
-    """
-    # Streamlit SecretsからAPIキーを取得
     api_key = None
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
@@ -70,15 +65,13 @@ def generate_response(system_instruction, memories, history, user_message):
         api_key = st.secrets["general"]["GEMINI_API_KEY"]
 
     if not api_key:
-        raise ValueError("APIキーが設定されていません。Streamlit Community CloudのSecretsに 'GEMINI_API_KEY' を登録してください。")
+        raise ValueError("APIキーが設定されていません。StreamlitのSecretsを確認してください。")
 
     genai.configure(api_key=api_key)
 
-    # 長期記憶とキャラクター設定を結合
     memories_text = "\n".join(memories)
     full_system_instruction = f"{system_instruction}\n\n【長期記憶・設定】\n{memories_text}"
 
-    # 現在のGoogle推奨・安定モデル（gemini-2.5-flash または gemini-1.5-flash）
     model_name = "gemini-1.5-flash"
 
     try:
@@ -87,7 +80,6 @@ def generate_response(system_instruction, memories, history, user_message):
             system_instruction=full_system_instruction
         )
 
-        # 履歴の変換
         gemini_history = []
         for m in history:
             role_map = "user" if m["role"] == "user" else "model"
@@ -100,9 +92,9 @@ def generate_response(system_instruction, memories, history, user_message):
     except Exception as e:
         error_str = str(e)
         if "API key not valid" in error_str:
-            raise ValueError(f"APIキーが無効です。正しいキーが設定されているか確認してください。(詳細: {e})")
+            raise ValueError(f"APIキーが無効です。(詳細: {e})")
         elif "Model not found" in error_str or "not supported" in error_str:
-            raise ValueError(f"指定されたモデル名が無効、または利用できません。(モデル名: {model_name}, 詳細: {e})")
+            raise ValueError(f"モデル名が無効、または利用できません。(詳細: {e})")
         else:
             raise RuntimeError(f"AI通信中にエラーが発生しました: {e}")
 
@@ -188,13 +180,12 @@ current_messages = st.session_state.histories[current_chat_name]
 
 st.divider()
 
-# 履歴の表示と個別編集・削除機能
+# 履歴の表示と個別編集機能
 for i, msg in enumerate(current_messages):
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
         st.write(msg["content"])
         
-        # メッセージごとの編集ボタン
         edit_key = f"edit_mode_{current_chat_name}_{i}"
         if st.button("✏️ 編集", key=f"btn_edit_{current_chat_name}_{i}"):
             st.session_state[edit_key] = not st.session_state.get(edit_key, False)
@@ -206,11 +197,9 @@ for i, msg in enumerate(current_messages):
             with col_save:
                 if st.button("💾 更新を保存", key=f"save_btn_{current_chat_name}_{i}"):
                     if msg["role"] == "user":
-                        # ユーザー発言が編集された場合：それ以降の履歴を切り捨てる（再生成の起点にするため）
                         current_messages = current_messages[:i]
                         current_messages.append({"role": "user", "content": edited_content})
                         
-                        # 自動でAIの新しい返答を生成して追加
                         system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
                         with st.spinner("AIが返答を生成中..."):
                             try:
@@ -224,7 +213,6 @@ for i, msg in enumerate(current_messages):
                             except Exception as e:
                                 st.error(str(e))
                     else:
-                        # AI側の返答が編集された場合：そのメッセージだけを書き換える
                         current_messages[i]["content"] = edited_content
                         
                     st.session_state.histories[current_chat_name] = current_messages
@@ -238,14 +226,13 @@ for i, msg in enumerate(current_messages):
 
 st.divider()
 
-# 一括操作ボタン（再生成・やり取り取り消し・履歴クリア）
+# 一括操作ボタン
 col_b1, col_b2, col_b3 = st.columns(3)
 with col_b1:
     if st.button("🔄 最後の返答を再生成") and len(current_messages) >= 2:
-        # 最後のAI返答を削除し、直前のユーザー発言を取り出して再生成
         if current_messages[-1]["role"] == "assistant":
-            last_assistant = current_messages.pop() # AIの返答をポップ
-            last_user = current_messages[-1]["content"] # 直前のユーザー発言を取得
+            last_assistant = current_messages.pop()
+            last_user = current_messages[-1]["content"]
             
             system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
             with st.spinner("AIが新しい返答を生成中..."):
@@ -260,11 +247,10 @@ with col_b1:
                     save_data(HISTORY_FILE, st.session_state.histories)
                     st.rerun()
                 except Exception as e:
-                    current_messages.append(last_assistant) # エラー時は戻す
+                    current_messages.append(last_assistant)
                     st.error(str(e))
 with col_b2:
     if st.button("↩ 1往復取り消し") and current_messages:
-        # ユーザーとAIのペア（または最後の発言）を削除
         current_messages.pop()
         if current_messages and current_messages[-1]["role"] == "assistant":
             current_messages.pop()
@@ -276,28 +262,29 @@ with col_b3:
         save_data(HISTORY_FILE, st.session_state.histories)
         st.rerun()
 
-# チャット入力欄
-if prompt := st.chat_input("メッセージを入力..."):
+# チャット入力欄（スマホでも改行しやすいテキストエリア＋送信ボタン方式に変更）
+st.subheader("✉️ メッセージ送信")
+with st.form(key="chat_form", clear_on_submit=True):
+    user_input = st.text_area("メッセージを入力（Shift+Enter等で改行可能）", height=100, key="input_text_area")
+    submit_button = st.form_submit_button(label="送信")
+
+if submit_button and user_input.strip():
+    prompt = user_input.strip()
     current_messages.append({"role": "user", "content": prompt})
     save_data(HISTORY_FILE, st.session_state.histories)
     
-    with st.chat_message("user", avatar="👤"):
-        st.write(prompt)
-        
-    with st.chat_message("assistant", avatar="🤖"):
-        with st.spinner("思考中..."):
-            try:
-                system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
-                reply = generate_response(
-                    system_prompt,
-                    st.session_state.saved_memories,
-                    current_messages[:-1],
-                    prompt
-                )
-                st.write(reply)
-                current_messages.append({"role": "assistant", "content": reply})
-                save_data(HISTORY_FILE, st.session_state.histories)
-            except Exception as e:
-                # エラーが発生した場合はユーザー入力を戻してエラーを表示
-                current_messages.pop()
-                st.error(str(e))
+    with st.spinner("思考中..."):
+        try:
+            system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+            reply = generate_response(
+                system_prompt,
+                st.session_state.saved_memories,
+                current_messages[:-1],
+                prompt
+            )
+            current_messages.append({"role": "assistant", "content": reply})
+            save_data(HISTORY_FILE, st.session_state.histories)
+            st.rerun()
+        except Exception as e:
+            current_messages.pop()
+            st.error(str(e))
