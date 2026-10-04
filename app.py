@@ -13,7 +13,6 @@ div[data-testid="stChatMessage"]:has(div[aria-label="Chat message from assistant
 </style>
 """, unsafe_allow_html=True)
 
-# 履歴保存用のファイルパス
 HISTORY_FILE = "chat_histories.json"
 MEMORY_FILE = "user_memory.json"
 
@@ -166,10 +165,4 @@ if len(current_messages) > 0 and current_messages[-1]["role"] == "user":
         save_data(HISTORY_FILE, st.session_state.histories)
     st.rerun()
 
-
-if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
-    with st.spinner("思考中..."):
-        reply = generate_response()
-        st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.rerun()
 
