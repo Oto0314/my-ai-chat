@@ -11,10 +11,10 @@ if st.button("テスト送信"):
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents="こんにちは。日本語で一言だけ返答してください。"
+            contents="Hello. Reply with OK."
         )
 
-        st.success("AIから返答がありました")
+        st.success("Gemini APIから返答がありました")
         st.write(response.text)
 
     except Exception as e:
