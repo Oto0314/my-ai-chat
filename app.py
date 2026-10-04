@@ -1,22 +1,48 @@
 import streamlit as st
-from google import genai
+import requests
 
 st.title("Gemini接続テスト")
 
 api_key = st.secrets["GEMINI_API_KEY"]
 
-client = genai.Client(api_key=api_key)
-
 if st.button("テスト送信"):
     try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents="Hello. Reply with OK."
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+        headers = {
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+
+        data = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": "Hello. Reply with OK."
+                        }
+                    ]
+                }
+            ]
+        }
+
+        response = requests.post(
+            url,
+            headers=headers,
+            json=data,
+            timeout=30
         )
 
-        st.success("Gemini APIから返答がありました")
-        st.write(response.text)
+        if response.status_code != 200:
+            st.error(f"Gemini APIエラー: HTTP {response.status_code}")
+            st.code(response.text)
+        else:
+            result = response.json()
+            text = result["candidates"][0]["content"]["parts"][0]["text"]
+
+            st.success("Gemini APIから返答がありました")
+            st.write(text)
 
     except Exception as e:
-        st.error("Gemini APIでエラーが発生しました")
+        st.error("通信エラーが発生しました")
         st.exception(e)
