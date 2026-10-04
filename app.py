@@ -31,13 +31,11 @@ if "current_chat" not in st.session_state:
 if "saved_memories" not in st.session_state:
     st.session_state.saved_memories = load_data(MEMORY_FILE, [])
 
-# チャットごとのキャラクター設定（口調やプロンプト）を管理
 if "chat_settings" not in st.session_state:
     st.session_state.chat_settings = load_data(SETTINGS_FILE, {})
 
 st.title("💬 自分専用・無制限AIチャット")
 
-# 現在のチャットのキャラクター設定を取得（なければデフォルト）
 current_chat_name = st.session_state.current_chat
 if current_chat_name not in st.session_state.chat_settings:
     st.session_state.chat_settings[current_chat_name] = {
@@ -113,29 +111,9 @@ if st.session_state.current_chat not in st.session_state.histories:
 
 current_messages = st.session_state.histories[st.session_state.current_chat]
 
-# チャット画面上部：操作ボタン
-col_b1, col_b2, col_b3 = st.columns(3)
-with col_b1:
-    if st.button("↩ 1個戻る") and current_messages:
-        current_messages.pop()
-        if current_messages and current_messages[-1]["role"] == "assistant":
-            current_messages.pop()
-        save_data(HISTORY_FILE, st.session_state.histories)
-        st.rerun()
-with col_b2:
-    if st.button("🔄 再思考") and len(current_messages) >= 2:
-        current_messages.pop()
-        save_data(HISTORY_FILE, st.session_state.histories)
-        st.rerun()
-with col_b3:
-    if st.button("🗑️ 履歴クリア"):
-        current_messages.clear()
-        save_data(HISTORY_FILE, st.session_state.histories)
-        st.rerun()
-
 st.divider()
 
-# メッセージ表示と編集機能
+# チャットメッセージの表示と個別編集
 for i, msg in enumerate(current_messages):
     avatar = "👤" if msg["role"] == "user" else "🤖"
     with st.chat_message(msg["role"], avatar=avatar):
@@ -151,6 +129,27 @@ for i, msg in enumerate(current_messages):
                 save_data(HISTORY_FILE, st.session_state.histories)
                 st.session_state[f"is_editing_{i}"] = False
                 st.rerun()
+
+# メッセージ入力欄のすぐ上に操作ボタンを配置（2枚目の位置を再現）
+st.divider()
+col_b1, col_b2, col_b3 = st.columns(3)
+with col_b1:
+    if st.button("🔄 最後の返答を再試行") and len(current_messages) >= 2:
+        current_messages.pop()
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+with col_b2:
+    if st.button("↩ 1つのやり取りを取り消し") and current_messages:
+        current_messages.pop()
+        if current_messages and current_messages[-1]["role"] == "assistant":
+            current_messages.pop()
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+with col_b3:
+    if st.button("🗑️ 履歴クリア"):
+        current_messages.clear()
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
 
 if prompt := st.chat_input("メッセージを入力..."):
     current_messages.append({"role": "user", "content": prompt})
