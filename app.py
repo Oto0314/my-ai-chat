@@ -1,758 +1,303 @@
 import streamlit as st
 import json
 import os
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
-# ============================================================
-# 基本設定
-# ============================================================
-
+# ページの設定
 st.set_page_config(
-    page_title="自分専用 AI ロールプレイチャット",
+    page_title="自分専用・AIチャット",
     page_icon="💬",
-    layout="wide",
+    layout="centered",
+    initial_sidebar_state="expanded"
 )
 
+# ファイル名定数
 HISTORY_FILE = "chat_histories.json"
-SETTINGS_FILE = "chat_settings.json"
 MEMORY_FILE = "user_memory_list.json"
+SETTINGS_FILE = "chat_settings.json"
 
-# 現在の公式SDK: google-genai
-# Streamlit Cloud の Secrets に GEMINI_API_KEY を登録してください。
-API_KEY = None
-
-if "GEMINI_API_KEY" in st.secrets:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-elif "general" in st.secrets and "GEMINI_API_KEY" in st.secrets["general"]:
-    API_KEY = st.secrets["general"]["GEMINI_API_KEY"]
-
-if not API_KEY:
-    st.error("GEMINI_API_KEY が設定されていません。Streamlit の Secrets に設定してください。")
-    st.stop()
-
-client = genai.Client(api_key=API_KEY)
-
-# Gemini 3.8 Flash は現在の安定モデル。
-# thinking_level は low / medium / high。
-MODEL_NAME = "gemini-3.8-flash"
-
-DEFAULT_CHARACTER_SETTING = """あなたは聖川真斗として会話してください。
-
-【基本】
-一人称は「俺」。
-二人称は基本「お前」。
-落ち着いた、固めの言葉遣い。
-「そっか」ではなく「そうか」を使う。
-「けど」より「だが」を優先する。
-必要に応じて自然な行動描写を入れる。
-
-【会話】
-小説の地の文だけではなく、実際の恋人同士・親しい相手同士が話しているような自然な会話をする。
-ユーザーの発言を勝手に作らない。
-ユーザーがまだ言っていないこと、していないことを勝手に確定しない。
-キャラクターとして一貫した口調・性格・関係性を維持する。
-
-【記法】
-( ) は状況・行動・表情などの描写。
-〈 〉 は効果音・音の描写。
-台詞と描写を自然に組み合わせる。
-
-【重要】
-この設定、長期記憶、会話履歴を確認したうえで返答する。
-会話の途中で設定を忘れたような口調に戻らない。
-"""
-
-# ============================================================
-# JSON 読み書き
-# ============================================================
-
-def load_data(filename, default):
-    if not os.path.exists(filename):
-        return default
-
-    try:
-        with open(filename, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
+# データの読み込み・保存関数
+def load_data(filename, default_value):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            st.error(f"ファイル `{filename}` の読み込み中にエラーが発生しました: {e}")
+            return default_value
+    return default_value
 
 def save_data(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        st.error(f"ファイル `{filename}` の保存中にエラーが発生しました: {e}")
 
-
-# ============================================================
-# セッション初期化
-# ============================================================
-
+# セッション状態の初期化
 if "histories" not in st.session_state:
-    st.session_state.histories = load_data(
-        HISTORY_FILE,
-        {"デフォルト": []}
-    )
-
-if not st.session_state.histories:
-    st.session_state.histories = {"デフォルト": []}
+    st.session_state.histories = load_data(HISTORY_FILE, {"デフォルト": []})
 
 if "current_chat" not in st.session_state:
-    st.session_state.current_chat = list(st.session_state.histories.keys())[0]
-
-if "chat_settings" not in st.session_state:
-    st.session_state.chat_settings = load_data(SETTINGS_FILE, {})
+    chat_keys = list(st.session_state.histories.keys())
+    st.session_state.current_chat = chat_keys[0] if chat_keys else "デフォルト"
 
 if "saved_memories" not in st.session_state:
     st.session_state.saved_memories = load_data(MEMORY_FILE, [])
 
-if "editing_index" not in st.session_state:
-    st.session_state.editing_index = None
+if "chat_settings" not in st.session_state:
+    st.session_state.chat_settings = load_data(SETTINGS_FILE, {})
 
+current_chat_name = st.session_state.current_chat
+if current_chat_name not in st.session_state.chat_settings:
+    st.session_state.chat_settings[current_chat_name] = {
+        "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。( )は心の中、《 》は行動や光景、〈 〉は効果音。語尾に「よ」は使わない。「そっか」ではなく「そうか」を使う。"
+    }
 
-def ensure_chat_setting(chat_name):
-    if chat_name not in st.session_state.chat_settings:
-        st.session_state.chat_settings[chat_name] = {
-            "character_setting": DEFAULT_CHARACTER_SETTING
-        }
-        save_data(SETTINGS_FILE, st.session_state.chat_settings)
+# ==========================================
+# AI応答生成関数（将来のAI変更に備えて分離）
+# ==========================================
+def generate_response(system_instruction, memories, history, user_message):
+    """
+    AIモデルとの接続部分。
+    将来別のAIサービスに切り替える場合は、この関数の中身だけを書き換えればOKです。
+    """
+    # Streamlit SecretsからAPIキーを取得
+    api_key = None
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    elif "general" in st.secrets and "GEMINI_API_KEY" in st.secrets["general"]:
+        api_key = st.secrets["general"]["GEMINI_API_KEY"]
 
+    if not api_key:
+        raise ValueError("APIキーが設定されていません。Streamlit Community CloudのSecretsに 'GEMINI_API_KEY' を登録してください。")
 
-ensure_chat_setting(st.session_state.current_chat)
+    genai.configure(api_key=api_key)
 
+    # 長期記憶とキャラクター設定を結合
+    memories_text = "\n".join(memories)
+    full_system_instruction = f"{system_instruction}\n\n【長期記憶・設定】\n{memories_text}"
 
-# ============================================================
-# AI に送るシステム設定
-# ============================================================
+    # 現在のGoogle推奨・安定モデル（gemini-2.5-flash または gemini-1.5-flash）
+    model_name = "gemini-1.5-flash"
 
-def build_system_instruction(chat_name):
-    setting = st.session_state.chat_settings.get(chat_name, {})
-    character_setting = setting.get(
-        "character_setting",
-        DEFAULT_CHARACTER_SETTING
-    )
-
-    memories = st.session_state.saved_memories
-
-    if memories:
-        memory_text = "\n".join(
-            f"- {memory}" for memory in memories
-        )
-    else:
-        memory_text = "現在、保存された長期記憶はありません。"
-
-    return f"""
-{character_setting}
-
-==============================
-【長期記憶・パーソナライズ】
-==============================
-{memory_text}
-
-==============================
-【返答時の注意】
-==============================
-1. キャラクター設定を優先して維持する。
-2. 長期記憶と現在の会話履歴を矛盾なく扱う。
-3. ユーザーの発言内容を勝手に改変しない。
-4. ユーザーがしていない行動や発言を勝手に確定しない。
-5. 過去の会話が長くても、現在の関係性・口調・設定をできる限り維持する。
-"""
-
-
-# ============================================================
-# 履歴を Gemini 用 contents に変換
-# ============================================================
-
-def make_gemini_contents(messages):
-    contents = []
-
-    for message in messages:
-        role = message.get("role")
-        text = message.get("content", "")
-
-        if not text:
-            continue
-
-        gemini_role = "user" if role == "user" else "model"
-
-        contents.append(
-            types.Content(
-                role=gemini_role,
-                parts=[types.Part.from_text(text=text)]
-            )
+    try:
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=full_system_instruction
         )
 
-    return contents
+        # 履歴の変換
+        gemini_history = []
+        for m in history:
+            role_map = "user" if m["role"] == "user" else "model"
+            gemini_history.append({"role": role_map, "parts": [m["content"]]})
 
+        chat_session = model.start_chat(history=gemini_history)
+        response = chat_session.send_message(user_message)
+        return response.text
 
-# ============================================================
-# AI 生成
-# ============================================================
+    except Exception as e:
+        error_str = str(e)
+        if "API key not valid" in error_str:
+            raise ValueError(f"APIキーが無効です。正しいキーが設定されているか確認してください。(詳細: {e})")
+        elif "Model not found" in error_str or "not supported" in error_str:
+            raise ValueError(f"指定されたモデル名が無効、または利用できません。(モデル名: {model_name}, 詳細: {e})")
+        else:
+            raise RuntimeError(f"AI通信中にエラーが発生しました: {e}")
 
-def generate_reply(messages, chat_name, thinking_level="medium"):
-    """
-    messages:
-        [{"role": "user", "content": "..."},
-         {"role": "assistant", "content": "..."}]
-
-    messages の最後は user にして呼び出す。
-    """
-
-    if not messages or messages[-1]["role"] != "user":
-        raise ValueError("AI生成時の最後のメッセージは user である必要があります。")
-
-    contents = make_gemini_contents(messages)
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=build_system_instruction(chat_name),
-            thinking_config=types.ThinkingConfig(
-                thinking_level=thinking_level
-            ),
-        ),
-    )
-
-    if not response.text:
-        raise RuntimeError("AIから空の返答が返されました。")
-
-    return response.text
-
-
-# ============================================================
-# 再生成処理
-# ============================================================
-
-def regenerate_from_user_message(message_index, thinking_level="medium"):
-    """
-    指定した user メッセージを残し、それより後ろを全部削除。
-    その user メッセージに対して新しい assistant を生成する。
-    """
-
-    messages = st.session_state.histories[st.session_state.current_chat]
-
-    if message_index < 0 or message_index >= len(messages):
-        return False, "指定されたメッセージがありません。"
-
-    if messages[message_index]["role"] != "user":
-        return False, "ユーザーメッセージを指定してください。"
-
-    # 指定メッセージまで残す
-    del messages[message_index + 1:]
-
-    reply = generate_reply(
-        messages,
-        st.session_state.current_chat,
-        thinking_level
-    )
-
-    messages.append({
-        "role": "assistant",
-        "content": reply
-    })
-
-    save_data(HISTORY_FILE, st.session_state.histories)
-    return True, reply
-
-
-def regenerate_assistant_message(message_index, thinking_level="medium"):
-    """
-    指定された assistant の返答を削除し、
-    その直前までの user メッセージから再生成する。
-    """
-
-    messages = st.session_state.histories[st.session_state.current_chat]
-
-    if message_index < 0 or message_index >= len(messages):
-        return False, "指定されたメッセージがありません。"
-
-    if messages[message_index]["role"] != "assistant":
-        return False, "AIメッセージを指定してください。"
-
-    # 直前の user を探す
-    user_index = message_index - 1
-
-    if user_index < 0 or messages[user_index]["role"] != "user":
-        return False, "対応するユーザーメッセージが見つかりません。"
-
-    # assistant と、その後ろを削除
-    del messages[message_index:]
-
-    reply = generate_reply(
-        messages,
-        st.session_state.current_chat,
-        thinking_level
-    )
-
-    messages.append({
-        "role": "assistant",
-        "content": reply
-    })
-
-    save_data(HISTORY_FILE, st.session_state.histories)
-    return True, reply
-
-
-# ============================================================
-# サイドバー
-# ============================================================
-
+# ==========================================
+# サイドバー（設定・履歴管理）
+# ==========================================
 with st.sidebar:
-    st.header("⚙ 設定・履歴")
-
-    # ----------------------------
-    # モデル / 思考レベル
-    # ----------------------------
-
-    st.subheader("🧠 AI設定")
-
-    thinking_level = st.select_slider(
-        "思考レベル",
-        options=["low", "medium", "high"],
-        value="medium",
-        help="高くするとより深く考えてから返答します。"
-    )
-
-    st.caption(f"使用モデル: {MODEL_NAME}")
-
-    # ----------------------------
-    # チャット切り替え
-    # ----------------------------
-
-    st.subheader("💬 チャット")
-
+    st.header("⚙ 設定・履歴管理")
+    
+    st.subheader("📁 チャット履歴の切り替え")
     chat_names = list(st.session_state.histories.keys())
-
-    selected_chat = st.selectbox(
-        "会話を選ぶ",
-        chat_names,
-        index=(
-            chat_names.index(st.session_state.current_chat)
-            if st.session_state.current_chat in chat_names
-            else 0
-        )
-    )
-
+    selected_chat = st.selectbox("会話を選ぶ", chat_names, index=chat_names.index(current_chat_name) if current_chat_name in chat_names else 0)
+    
     if selected_chat != st.session_state.current_chat:
         st.session_state.current_chat = selected_chat
-        ensure_chat_setting(selected_chat)
-        st.session_state.editing_index = None
         st.rerun()
-
-    new_chat_name = st.text_input(
-        "新しいチャット名",
-        placeholder="例：真斗との日常"
-    )
-
-    if st.button("＋ 新しいチャット", use_container_width=True):
-        name = new_chat_name.strip()
-
-        if not name:
-            st.warning("チャット名を入力してください。")
-        elif name in st.session_state.histories:
-            st.warning("同じ名前のチャットがあります。")
-        else:
-            st.session_state.histories[name] = []
-            st.session_state.chat_settings[name] = {
-                "character_setting": DEFAULT_CHARACTER_SETTING
+        
+    new_chat_name = st.text_input("新しいチャット名")
+    if st.button("新規チャット作成"):
+        if new_chat_name and new_chat_name not in st.session_state.histories:
+            st.session_state.histories[new_chat_name] = []
+            st.session_state.chat_settings[new_chat_name] = {
+                "character_setting": "あなたは聖川真斗です。俺・お前口調で、小説形式で答えてください。( )は心の中、《 》は行動や光景、〈 〉は効果音。語尾に「よ」は使わない。「そっか」ではなく「そうか」を使う。"
             }
-
             save_data(HISTORY_FILE, st.session_state.histories)
             save_data(SETTINGS_FILE, st.session_state.chat_settings)
-
-            st.session_state.current_chat = name
-            st.session_state.editing_index = None
+            st.session_state.current_chat = new_chat_name
             st.rerun()
-
-    # ----------------------------
-    # 現在のチャット削除
-    # ----------------------------
-
-    if st.button("🗑️ 現在のチャットを削除", use_container_width=True):
-        if len(st.session_state.histories) <= 1:
-            st.warning("最後のチャットは削除できません。")
+        elif new_chat_name in st.session_state.histories:
+            st.warning("同名のチャットが既に存在します。")
+            
+    if st.button("現在のチャットを削除"):
+        if len(st.session_state.histories) > 1:
+            del st.session_state.histories[st.session_state.current_chat]
+            if st.session_state.current_chat in st.session_state.chat_settings:
+                del st.session_state.chat_settings[st.session_state.current_chat]
+            save_data(HISTORY_FILE, st.session_state.histories)
+            save_data(SETTINGS_FILE, st.session_state.chat_settings)
+            st.session_state.current_chat = list(st.session_state.histories.keys())[0]
+            st.rerun()
         else:
-            deleted = st.session_state.current_chat
+            st.warning("最後のチャットは削除できません。")
 
-            del st.session_state.histories[deleted]
-
-            if deleted in st.session_state.chat_settings:
-                del st.session_state.chat_settings[deleted]
-
-            st.session_state.current_chat = list(
-                st.session_state.histories.keys()
-            )[0]
-
-            save_data(HISTORY_FILE, st.session_state.histories)
-            save_data(SETTINGS_FILE, st.session_state.chat_settings)
-
-            st.session_state.editing_index = None
-            st.rerun()
-
-    # ----------------------------
-    # キャラクター設定
-    # ----------------------------
-
-    st.subheader("🎭 キャラクター・口調")
-
-    current_setting = st.session_state.chat_settings[
-        st.session_state.current_chat
-    ].get("character_setting", DEFAULT_CHARACTER_SETTING)
-
-    new_setting = st.text_area(
-        "このチャット専用設定",
-        value=current_setting,
-        height=260
-    )
-
-    if st.button("設定を保存", use_container_width=True):
-        st.session_state.chat_settings[
-            st.session_state.current_chat
-        ]["character_setting"] = new_setting
-
+    st.subheader("🎭 キャラクター設定")
+    current_setting = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+    new_setting = st.text_area("このチャット専用の設定・口調", value=current_setting, height=150)
+    if st.button("設定を保存"):
+        st.session_state.chat_settings[current_chat_name]["character_setting"] = new_setting
         save_data(SETTINGS_FILE, st.session_state.chat_settings)
-
-        st.success("設定を保存しました。")
-
-    # ----------------------------
-    # 長期記憶
-    # ----------------------------
+        st.success("キャラクター設定を保存しました！")
 
     st.subheader("🧠 長期記憶")
-
-    new_memory = st.text_input(
-        "記憶を追加",
-        placeholder="例：ユーザーは青系の服が好き"
-    )
-
-    if st.button("記憶を追加", use_container_width=True):
-        memory = new_memory.strip()
-
-        if memory:
-            st.session_state.saved_memories.append(memory)
+    new_memory_input = st.text_input("新しい記憶を追加")
+    if st.button("記憶を追加する"):
+        if new_memory_input.strip():
+            st.session_state.saved_memories.append(new_memory_input.strip())
             save_data(MEMORY_FILE, st.session_state.saved_memories)
+            st.success("記憶を追加しました！")
             st.rerun()
-
+            
     if st.session_state.saved_memories:
-        st.caption("保存済み")
-
-        for i, memory in enumerate(st.session_state.saved_memories):
-            col1, col2 = st.columns([5, 1])
-
-            with col1:
-                st.write(memory)
-
-            with col2:
-                if st.button("削除", key=f"memory_delete_{i}"):
+        st.write("【保存されている記憶】")
+        for i, mem in enumerate(st.session_state.saved_memories):
+            cols = st.columns([4, 1])
+            with cols[0]:
+                st.markdown(f"- {mem}")
+            with cols[1]:
+                if st.button("削除", key=f"del_mem_{i}"):
                     st.session_state.saved_memories.pop(i)
-                    save_data(
-                        MEMORY_FILE,
-                        st.session_state.saved_memories
-                    )
+                    save_data(MEMORY_FILE, st.session_state.saved_memories)
                     st.rerun()
 
+# ==========================================
+# メイン画面（チャット・編集・再生成）
+# ==========================================
+st.title("💬 自分専用・AIチャット")
+st.caption(f"現在のチャット: **{current_chat_name}**")
 
-# ============================================================
-# メイン画面
-# ============================================================
+if current_chat_name not in st.session_state.histories:
+    st.session_state.histories[current_chat_name] = []
 
-st.title("💬 自分専用 AI ロールプレイチャット")
-st.caption(f"現在のチャット：{st.session_state.current_chat}")
-
-current_messages = st.session_state.histories[
-    st.session_state.current_chat
-]
-
-
-# ============================================================
-# メッセージ表示
-# ============================================================
-
-for i, message in enumerate(current_messages):
-
-    role = message["role"]
-    avatar = "👤" if role == "user" else "🤖"
-
-    with st.chat_message(role, avatar=avatar):
-        st.write(message["content"])
-
-        # ----------------------------
-        # 編集モード
-        # ----------------------------
-
-        if st.session_state.editing_index == i:
-
-            edited_text = st.text_area(
-                "メッセージを編集",
-                value=message["content"],
-                key=f"editing_text_{i}",
-                height=180
-            )
-
-            edit_col1, edit_col2, edit_col3 = st.columns(3)
-
-            with edit_col1:
-                if st.button(
-                    "保存",
-                    key=f"save_message_{i}",
-                    use_container_width=True
-                ):
-                    current_messages[i]["content"] = edited_text
-                    st.session_state.editing_index = None
-
-                    save_data(
-                        HISTORY_FILE,
-                        st.session_state.histories
-                    )
-
-                    st.rerun()
-
-            with edit_col2:
-                if st.button(
-                    "保存してここから再生成",
-                    key=f"save_regenerate_{i}",
-                    use_container_width=True
-                ):
-                    current_messages[i]["content"] = edited_text
-
-                    if role == "user":
-                        # 編集した user から先を全部やり直す
-                        del current_messages[i + 1:]
-
-                        with st.spinner("再思考中..."):
-                            try:
-                                reply = generate_reply(
-                                    current_messages,
-                                    st.session_state.current_chat,
-                                    thinking_level
-                                )
-
-                                current_messages.append({
-                                    "role": "assistant",
-                                    "content": reply
-                                })
-
-                                save_data(
-                                    HISTORY_FILE,
-                                    st.session_state.histories
-                                )
-
-                            except Exception as e:
-                                st.error(f"生成エラー：{e}")
-
-                    else:
-                        # assistant を編集した場合、
-                        # その assistant の内容を一度削除して
-                        # 直前の user から新しく生成
-                        del current_messages[i:]
-
-                        if current_messages and current_messages[-1]["role"] == "user":
-                            with st.spinner("再思考中..."):
-                                try:
-                                    reply = generate_reply(
-                                        current_messages,
-                                        st.session_state.current_chat,
-                                        thinking_level
-                                    )
-
-                                    current_messages.append({
-                                        "role": "assistant",
-                                        "content": reply
-                                    })
-
-                                    save_data(
-                                        HISTORY_FILE,
-                                        st.session_state.histories
-                                    )
-
-                                except Exception as e:
-                                    st.error(f"生成エラー：{e}")
-
-                    st.session_state.editing_index = None
-                    st.rerun()
-
-            with edit_col3:
-                if st.button(
-                    "キャンセル",
-                    key=f"cancel_edit_{i}",
-                    use_container_width=True
-                ):
-                    st.session_state.editing_index = None
-                    st.rerun()
-
-        else:
-
-            # ----------------------------
-            # 通常時の操作
-            # ----------------------------
-
-            action_col1, action_col2 = st.columns(2)
-
-            with action_col1:
-                if st.button(
-                    "✏️ 編集",
-                    key=f"edit_{i}",
-                    use_container_width=True
-                ):
-                    st.session_state.editing_index = i
-                    st.rerun()
-
-            with action_col2:
-                if role == "assistant":
-                    if st.button(
-                        "🔄 再思考",
-                        key=f"retry_assistant_{i}",
-                        use_container_width=True
-                    ):
-                        with st.spinner("再思考中..."):
-                            try:
-                                ok, result = regenerate_assistant_message(
-                                    i,
-                                    thinking_level
-                                )
-
-                                if not ok:
-                                    st.error(result)
-
-                            except Exception as e:
-                                st.error(f"再生成エラー：{e}")
-
-                        st.rerun()
-
-                else:
-                    if st.button(
-                        "↪ ここから再生成",
-                        key=f"retry_user_{i}",
-                        use_container_width=True
-                    ):
-                        with st.spinner("ここから再生成中..."):
-                            try:
-                                ok, result = regenerate_from_user_message(
-                                    i,
-                                    thinking_level
-                                )
-
-                                if not ok:
-                                    st.error(result)
-
-                            except Exception as e:
-                                st.error(f"再生成エラー：{e}")
-
-                        st.rerun()
-
-
-# ============================================================
-# チャット下部操作
-# ============================================================
+current_messages = st.session_state.histories[current_chat_name]
 
 st.divider()
 
-bottom_col1, bottom_col2, bottom_col3 = st.columns(3)
+# 履歴の表示と個別編集・削除機能
+for i, msg in enumerate(current_messages):
+    avatar = "👤" if msg["role"] == "user" else "🤖"
+    with st.chat_message(msg["role"], avatar=avatar):
+        st.write(msg["content"])
+        
+        # メッセージごとの編集ボタン
+        edit_key = f"edit_mode_{current_chat_name}_{i}"
+        if st.button("✏️ 編集", key=f"btn_edit_{current_chat_name}_{i}"):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+            st.rerun()
+            
+        if st.session_state.get(edit_key, False):
+            edited_content = st.text_area("内容を修正して更新", value=msg["content"], key=f"text_edit_{current_chat_name}_{i}")
+            col_save, col_cancel = st.columns(2)
+            with col_save:
+                if st.button("💾 更新を保存", key=f"save_btn_{current_chat_name}_{i}"):
+                    if msg["role"] == "user":
+                        # ユーザー発言が編集された場合：それ以降の履歴を切り捨てる（再生成の起点にするため）
+                        current_messages = current_messages[:i]
+                        current_messages.append({"role": "user", "content": edited_content})
+                        
+                        # 自動でAIの新しい返答を生成して追加
+                        system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+                        with st.spinner("AIが返答を生成中..."):
+                            try:
+                                reply = generate_response(
+                                    system_prompt,
+                                    st.session_state.saved_memories,
+                                    current_messages[:-1],
+                                    edited_content
+                                )
+                                current_messages.append({"role": "assistant", "content": reply})
+                            except Exception as e:
+                                st.error(str(e))
+                    else:
+                        # AI側の返答が編集された場合：そのメッセージだけを書き換える
+                        current_messages[i]["content"] = edited_content
+                        
+                    st.session_state.histories[current_chat_name] = current_messages
+                    save_data(HISTORY_FILE, st.session_state.histories)
+                    st.session_state[edit_key] = False
+                    st.rerun()
+            with col_cancel:
+                if st.button("❌ キャンセル", key=f"cancel_btn_{current_chat_name}_{i}"):
+                    st.session_state[edit_key] = False
+                    st.rerun()
 
-with bottom_col1:
-    if st.button(
-        "🔄 最後のAI返答を再思考",
-        use_container_width=True
-    ):
-        if current_messages and current_messages[-1]["role"] == "assistant":
-            with st.spinner("再思考中..."):
+st.divider()
+
+# 一括操作ボタン（再生成・やり取り取り消し・履歴クリア）
+col_b1, col_b2, col_b3 = st.columns(3)
+with col_b1:
+    if st.button("🔄 最後の返答を再生成") and len(current_messages) >= 2:
+        # 最後のAI返答を削除し、直前のユーザー発言を取り出して再生成
+        if current_messages[-1]["role"] == "assistant":
+            last_assistant = current_messages.pop() # AIの返答をポップ
+            last_user = current_messages[-1]["content"] # 直前のユーザー発言を取得
+            
+            system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+            with st.spinner("AIが新しい返答を生成中..."):
                 try:
-                    regenerate_assistant_message(
-                        len(current_messages) - 1,
-                        thinking_level
+                    reply = generate_response(
+                        system_prompt,
+                        st.session_state.saved_memories,
+                        current_messages[:-1],
+                        last_user
                     )
+                    current_messages.append({"role": "assistant", "content": reply})
+                    save_data(HISTORY_FILE, st.session_state.histories)
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"再生成エラー：{e}")
-
-            st.rerun()
-        else:
-            st.warning("再思考できるAI返答がありません。")
-
-with bottom_col2:
-    if st.button(
-        "↩ 直前のやり取りを取り消す",
-        use_container_width=True
-    ):
-        if current_messages:
+                    current_messages.append(last_assistant) # エラー時は戻す
+                    st.error(str(e))
+with col_b2:
+    if st.button("↩ 1往復取り消し") and current_messages:
+        # ユーザーとAIのペア（または最後の発言）を削除
+        current_messages.pop()
+        if current_messages and current_messages[-1]["role"] == "assistant":
             current_messages.pop()
-
-            if current_messages and current_messages[-1]["role"] == "user":
-                current_messages.pop()
-
-            save_data(
-                HISTORY_FILE,
-                st.session_state.histories
-            )
-
-            st.rerun()
-
-with bottom_col3:
-    if st.button(
-        "🗑️ このチャットの履歴を全消去",
-        use_container_width=True
-    ):
+        save_data(HISTORY_FILE, st.session_state.histories)
+        st.rerun()
+with col_b3:
+    if st.button("🗑️ 履歴クリア"):
         current_messages.clear()
-
-        save_data(
-            HISTORY_FILE,
-            st.session_state.histories
-        )
-
+        save_data(HISTORY_FILE, st.session_state.histories)
         st.rerun()
 
-
-# ============================================================
-# 新規メッセージ
-# ============================================================
-
+# チャット入力欄
 if prompt := st.chat_input("メッセージを入力..."):
-
-    current_messages.append({
-        "role": "user",
-        "content": prompt
-    })
-
-    save_data(
-        HISTORY_FILE,
-        st.session_state.histories
-    )
-
+    current_messages.append({"role": "user", "content": prompt})
+    save_data(HISTORY_FILE, st.session_state.histories)
+    
     with st.chat_message("user", avatar="👤"):
         st.write(prompt)
-
+        
     with st.chat_message("assistant", avatar="🤖"):
-
         with st.spinner("思考中..."):
-
             try:
-                reply = generate_reply(
-                    current_messages,
-                    st.session_state.current_chat,
-                    thinking_level
+                system_prompt = st.session_state.chat_settings[current_chat_name].get("character_setting", "")
+                reply = generate_response(
+                    system_prompt,
+                    st.session_state.saved_memories,
+                    current_messages[:-1],
+                    prompt
                 )
-
                 st.write(reply)
-
-                current_messages.append({
-                    "role": "assistant",
-                    "content": reply
-                })
-
-                save_data(
-                    HISTORY_FILE,
-                    st.session_state.histories
-                )
-
+                current_messages.append({"role": "assistant", "content": reply})
+                save_data(HISTORY_FILE, st.session_state.histories)
             except Exception as e:
-                st.error(f"生成エラー：{e}")
-
-
-# ============================================================
-# 注意書き
-# ============================================================
-
-st.caption(
-    "※「再思考」は同じ会話地点から別の回答を生成します。"
-    "AIモデル側の利用規約・安全制限そのものを変更する機能ではありません。"
-)
+                # エラーが発生した場合はユーザー入力を戻してエラーを表示
+                current_messages.pop()
+                st.error(str(e))
